@@ -1,0 +1,75 @@
+# KosanHub - deployment dengan Docker Compose
+#   app    : aplikasi Laravel (satu-satunya yang membuka port ke host)
+#   worker : image yang SAMA dengan app, perintah berbeda -> memproses job pembuatan tagihan dari antrean
+#   db     : MySQL, hanya di network internal
+#
+# Image diambil dari Docker Hub (hasil pipeline Jenkins), bukan build lokal.
+# Semua nilai ${...} dibaca dari file .env (salin dari .env.example).
+
+name: kosanhub
+
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${DB_DATABASE}
+      MYSQL_USER: ${DB_USERNAME}
+      MYSQL_PASSWORD: ${DB_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD}
+    volumes:
+      - db-data:/var/lib/mysql
+    networks:
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u root -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  app:
+    image: ${DOCKERHUB_USER:?isi DOCKERHUB_USER di .env}/kosanhub:latest
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DB_HOST: db
+      RUN_MIGRATIONS: "true"
+    ports:
+      - "${APP_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - frontend
+      - backend
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 40s
+
+  worker:
+    image: ${DOCKERHUB_USER:?isi DOCKERHUB_USER di .env}/kosanhub:latest
+    restart: unless-stopped
+    command: ["php", "artisan", "queue:work", "--tries=3", "--sleep=1", "--verbose"]
+    env_file: .env
+    environment:
+      DB_HOST: db
+      RUN_MIGRATIONS: "false"
+    depends_on:
+      db:
+        condition: service_healthy
+      app:
+        condition: service_healthy
+    networks:
+      - backend
+
+networks:
+  frontend:
+  backend:
+    internal: true
+
+volumes:
+  db-data:
